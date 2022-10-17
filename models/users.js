@@ -23,6 +23,10 @@ const usersSchema = new Schema({
     type: SchemaTypes.ObjectId,
     ref: "user",
   },
+  avatarURL: {
+    type: String,
+    required: true,
+  },
 });
 
 const User = model("user", usersSchema);
