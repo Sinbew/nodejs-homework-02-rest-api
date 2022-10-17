@@ -1,6 +1,8 @@
 const express = require("express");
 const Joi = require("joi");
 const router = express.Router();
+const fs = require("fs/promises");
+const path = require("path");
 
 module.exports = router;
 
@@ -9,6 +11,10 @@ const User = require("../../models/users");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const checkAuth = require("../../middlewares/checkAuth");
+const gravatar = require("gravatar");
+const upload = require("../../middlewares/upload");
+
+const Jimp = require("jimp");
 
 require("dotenv").config();
 
@@ -26,6 +32,8 @@ const LoginSchema = Joi.object({
   email: Joi.string().required(),
 });
 
+const avatarDir = path.join(__dirname, "../../", "public", "avatars");
+
 router.post("/users/signup", async (req, res) => {
   try {
     const { error } = Schema.validate(req.body);
@@ -36,6 +44,7 @@ router.post("/users/signup", async (req, res) => {
     }
 
     const { password, email, subscription } = req.body;
+    const avatarURL = gravatar.url(email);
 
     const userEmail = await User.findOne({ email });
     if (userEmail) {
@@ -46,7 +55,7 @@ router.post("/users/signup", async (req, res) => {
     const salt = 10;
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const result = await User.create({ password: hashedPassword, email, subscription });
+    const result = await User.create({ password: hashedPassword, email, subscription, avatarURL });
     res.status(201).json({ subscription: result.subscription, email: result.email });
   } catch (error) {
     res.status(500).json({
@@ -122,5 +131,35 @@ router.get("/users/current", checkAuth, async (req, res) => {
     res.status(500).json({
       message: "Server error",
     });
+  }
+});
+
+router.patch("/users/avatars", checkAuth, upload.single("avatar"), async (req, res) => {
+  try {
+    const { _id } = req.user;
+    const { path: tempUpload, originalname } = req.file;
+    const extention = originalname.split(".").pop();
+    const filename = `${_id}.${extention}`;
+
+    const resultUpload = path.join(avatarDir, filename);
+    await fs.rename(tempUpload, resultUpload);
+
+    Jimp.read(resultUpload, async (err, avatar) => {
+      if (err) {
+        throw err;
+      }
+      await avatar.resize(256, 256).write(resultUpload);
+    });
+
+    const avatarURL = path.join("avatars", filename);
+
+    await User.findByIdAndUpdate(_id, { avatarURL });
+
+    res.json({
+      avatarURL,
+    });
+  } catch (error) {
+    await fs.unlink(req.file.path);
+    throw error;
   }
 });
