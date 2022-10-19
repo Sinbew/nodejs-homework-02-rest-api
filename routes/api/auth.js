@@ -3,6 +3,7 @@ const Joi = require("joi");
 const router = express.Router();
 const fs = require("fs/promises");
 const path = require("path");
+const { nanoid } = require("nanoid");
 
 module.exports = router;
 
@@ -15,6 +16,7 @@ const gravatar = require("gravatar");
 const upload = require("../../middlewares/upload");
 
 const Jimp = require("jimp");
+const sendMail = require("../../sendgrid/sendmail");
 
 require("dotenv").config();
 
@@ -31,6 +33,12 @@ const LoginSchema = Joi.object({
   password: Joi.string().required(),
   email: Joi.string().required(),
 });
+
+const emailSchema = Joi.object({
+  email: Joi.string().required(),
+});
+
+const { BASE_URL } = process.env;
 
 const avatarDir = path.join(__dirname, "../../", "public", "avatars");
 
@@ -55,9 +63,20 @@ router.post("/users/signup", async (req, res) => {
     const salt = 10;
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const result = await User.create({ password: hashedPassword, email, subscription, avatarURL });
+    const verificationToken = nanoid();
+    const result = await User.create({ password: hashedPassword, email, subscription, avatarURL, verificationToken });
+
+    const mail = {
+      to: email,
+      subject: "Підтвердження реєстрації на сайті",
+      html: `<a target="_blank" href="${BASE_URL}/api/auth/users/verify/${verificationToken}">Натисніть тут для підтвердження</a>`,
+    };
+
+    await sendMail(mail);
+
     res.status(201).json({ subscription: result.subscription, email: result.email });
   } catch (error) {
+    console.log(error.message);
     res.status(500).json({
       message: "Server error",
     });
@@ -81,6 +100,12 @@ router.post("/users/login", async (req, res) => {
     if (!user || !userPassword) {
       return res.status(401).json({
         message: "Email or password is wrong",
+      });
+    }
+
+    if (!user.verify) {
+      res.status(401).json({
+        message: "Email not verified",
       });
     }
 
@@ -162,4 +187,49 @@ router.patch("/users/avatars", checkAuth, upload.single("avatar"), async (req, r
     await fs.unlink(req.file.path);
     throw error;
   }
+});
+
+router.get("/users/verify/:verificationToken", async (req, res) => {
+  try {
+    const { verificationToken } = req.params;
+    const user = await User.findOne({ verificationToken });
+    if (!user) {
+      res.status(404).json({
+        message: "User not found",
+      });
+    }
+    await User.findByIdAndUpdate(user._id, { verify: true, verificationToken: "" });
+    res.json({
+      message: "Verification successful",
+    });
+  } catch (error) {
+    console.log(error);
+  }
+});
+
+router.post("/users/verify", async (req, res) => {
+  const { error } = emailSchema.validate(req.body);
+  if (error) {
+    res.status(404).json({
+      message: "Missing required fields",
+    });
+  }
+  const { email } = req.body;
+  const user = await User.findOne({ email });
+  if (!user || user.verify) {
+    res.status(400).json({
+      message: "Verification has already benn passed",
+    });
+  }
+
+  const mail = {
+    to: email,
+    subject: "Підтвердження реєстрації на сайті",
+    html: `<a target="_blank" href="${BASE_URL}/api/auth/users/verify/${user.verificationToken}">Натисніть для підтвердження</a>`,
+  };
+
+  await sendMail(mail);
+  res.json({
+    message: "Verification email sent",
+  });
 });
